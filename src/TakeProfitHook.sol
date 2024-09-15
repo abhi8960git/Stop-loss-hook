@@ -12,30 +12,55 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
     using PoolIdLibrary for PoolKey;
 
     mapping(PoolId poolId => int24 tickLower) public tickLowerLasts;
-    mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => int256 amount))) public takeProfitPositions;
-    constructor(IPoolManager _poolManager, string memory _url)
-        BaseHook(_poolManager)
-        ERC1155(_url)
-    {}
+    mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => int256 amount)))
+        public takeProfitPositions;
+
+    constructor(
+        IPoolManager _poolManager,
+        string memory _url
+    ) BaseHook(_poolManager) ERC1155(_url) {}
 
     // Required override function for BaseHook to let the PoolManager know which hooks are implemented
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
-        return Hooks.Permissions({
-            beforeInitialize: false,
-            afterInitialize: false,
-            beforeAddLiquidity: false,
-            afterAddLiquidity: false,
-            beforeRemoveLiquidity: false,
-            afterRemoveLiquidity: false,
-            beforeSwap: false,
-            afterSwap: false,
-            beforeDonate: false,
-            afterDonate: false,
-            beforeSwapReturnDelta: false,
-            afterSwapReturnDelta: false,
-            afterAddLiquidityReturnDelta: false,
-            afterRemoveLiquidityReturnDelta: false
-        });
+    function getHookPermissions()
+        public
+        pure
+        override
+        returns (Hooks.Permissions memory)
+    {
+        return
+            Hooks.Permissions({
+                beforeInitialize: false,
+                afterInitialize: false,
+                beforeAddLiquidity: false,
+                afterAddLiquidity: false,
+                beforeRemoveLiquidity: false,
+                afterRemoveLiquidity: false,
+                beforeSwap: false,
+                afterSwap: false,
+                beforeDonate: false,
+                afterDonate: false,
+                beforeSwapReturnDelta: false,
+                afterSwapReturnDelta: false,
+                afterAddLiquidityReturnDelta: false,
+                afterRemoveLiquidityReturnDelta: false
+            });
     }
 
+    function _setTickLowerLast(PoolId poolId, int24 tickLower) private {
+        tickLowerLasts[poolId] = tickLower;
+    }
+
+    function _getTickLower(
+        int24 actualTick,
+        int24 tickSpacing
+    ) private pure returns (int24) {
+        int24 intervals = actualTick / tickSpacing;
+        if (actualTick < 0 && (actualTick % tickSpacing) != 0) {
+            intervals--;
+        }
+        return intervals * tickSpacing;
+    }
+
+    // Hooks 
+    
 }
