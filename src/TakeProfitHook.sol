@@ -61,6 +61,19 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         return intervals * tickSpacing;
     }
 
+    // ERc115 helpers
+
+    function getTokenId(
+        PoolKey calldata key,
+        int24 tickLower,
+        bool zeroForOne
+    ) public pure returns (uint256) {
+        return
+            uint256(
+                keccak256(abi.encodePacked(key.toId(), tickLower, zeroForOne))
+            );
+    }
+
     // Hooks
     function afterInitialize(
         address,
