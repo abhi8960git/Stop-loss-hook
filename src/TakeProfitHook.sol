@@ -15,6 +15,20 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
     mapping(PoolId poolId => mapping(int24 tick => mapping(bool zeroForOne => int256 amount)))
         public takeProfitPositions;
 
+    // tokenIdExists is a mapping to store whether a given tokenId (i.e. a take-profit order) exists given a token id
+    mapping(uint256 tokenId => bool exists) public tokenIdExists;
+    // tokenIdClaimable is a mapping that stores how many swapped tokens are claimable for a given tokenId
+    mapping(uint256 tokenId => uint256 claimable) public tokenIdClaimable;
+    // tokenIdTotalSupply is a mapping that stores how many tokens need to be sold to execute the take-profit order
+    mapping(uint256 tokenId => uint256 supply) public tokenIdTotalSupply;
+    // tokenIdData is a mapping that stores the PoolKey, tickLower, and zeroForOne values for a given tokenId
+    mapping(uint256 tokenId => TokenData) public tokenIdData;
+    struct TokenData {
+        PoolKey poolKey;
+        int24 tick;
+        bool zeroForOne;
+    }
+
     constructor(
         IPoolManager _poolManager,
         string memory _url
