@@ -116,6 +116,32 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         return tickLower;
     }
 
+    // cancel order
+
+    function cancelOrder(
+        PoolKey calldata key,
+        int24 tick,
+        bool zeroForOne
+    ) external {
+        int24 tickLower = _getTickLower(tick, key.tickSpacing);
+        uint256 tokenId = getTokenId(key, tickLower, zeroForOne);
+
+        // Get the amount of tokens the user's ERC-1155 tokens represent
+        uint256 amountIn = balanceOf(msg.sender, tokenId);
+        require(amountIn > 0, "TakeProfitsHook: No orders to cancel");
+
+        takeProfitPositions[key.toId()][tickLower][zeroForOne] -= int256(
+            amountIn
+        );
+        tokenIdTotalSupply[tokenId] -= amountIn;
+        _burn(msg.sender, tokenId, amountIn);
+
+        // Extract the address of the token the user wanted to sell
+        Currency tokenToBeSold = zeroForOne ? key.currency0 : key.currency1;
+        // Move the tokens to be sold from this contract back to the user
+        tokenToBeSold.transfer(msg.sender, amountIn);
+    }
+
     // ERc115 helpers
 
     function getTokenId(
@@ -128,6 +154,8 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
                 keccak256(abi.encodePacked(key.toId(), tickLower, zeroForOne))
             );
     }
+
+    
 
     // Hooks
     function afterInitialize(
