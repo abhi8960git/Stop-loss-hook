@@ -9,6 +9,8 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 contract TakeProfitsHook is BaseHook, ERC1155 {
     using PoolIdLibrary for PoolKey;
@@ -119,28 +121,28 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
     // Cancel order
 
     function cancelOrder(
-    PoolKey calldata key,
-    int24 tick,
-    bool zeroForOne
-) external {
-    int24 tickLower = _getTickLower(tick, key.tickSpacing);
-    uint256 tokenId = getTokenId(key, tickLower, zeroForOne);
+        PoolKey calldata key,
+        int24 tick,
+        bool zeroForOne
+    ) external {
+        int24 tickLower = _getTickLower(tick, key.tickSpacing);
+        uint256 tokenId = getTokenId(key, tickLower, zeroForOne);
 
-    // Get the amount of tokens the user's ERC-1155 tokens represent
-    uint256 amountIn = balanceOf(msg.sender, tokenId);
-    require(amountIn > 0, "TakeProfitsHook: No orders to cancel");
+        // Get the amount of tokens the user's ERC-1155 tokens represent
+        uint256 amountIn = balanceOf(msg.sender, tokenId);
+        require(amountIn > 0, "TakeProfitsHook: No orders to cancel");
 
-    takeProfitPositions[key.toId()][tickLower][zeroForOne] -= int256(
-        amountIn
-    );
-    tokenIdTotalSupply[tokenId] -= amountIn;
-    _burn(msg.sender, tokenId, amountIn);
+        takeProfitPositions[key.toId()][tickLower][zeroForOne] -= int256(
+            amountIn
+        );
+        tokenIdTotalSupply[tokenId] -= amountIn;
+        _burn(msg.sender, tokenId, amountIn);
 
-    // Extract the address of the token the user wanted to sell
-    Currency tokenToBeSold = zeroForOne ? key.currency0 : key.currency1;
-    // Move the tokens to be sold from this contract back to the user
-    tokenToBeSold.transfer(msg.sender, amountIn);
-}
+        // Extract the address of the token the user wanted to sell
+        Currency tokenToBeSold = zeroForOne ? key.currency0 : key.currency1;
+        // Move the tokens to be sold from this contract back to the user
+        tokenToBeSold.transfer(msg.sender, amountIn);
+    }
 
     // ERc115 helpers
 
@@ -155,6 +157,98 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
             );
     }
 
+    // handle swap
+
+    function _handleSwap(
+        PoolKey calldata key,
+        IPoolManager.SwapParams memory params
+    ) internal returns (BalanceDelta) {
+        // delta is the BalanceDelta struct that stores the delta balance changes
+        // i.e. Change in Token 0 balance and change in Token 1 balance
+
+        BalanceDelta delta = poolManager.swap(key, params, "");
+
+        // If this swap was a swap for Token 0 to Token 1
+        if (params.zeroForOne) {
+            // If we owe Uniswap Token 0, we need to send them the required amount
+            // NOTE: This will be a negative value, as it is a negative balance change from the user's perspective
+            if (delta.amount0() < 0) {
+                IERC20(Currency.unwrap(key.currency0)).transfer(
+                    address(poolManager),
+                    // We flip the sign of the amount to make it positive when sending it to the pool manager
+                    uint128(-delta.amount0())
+                );
+                poolManager.settle(key.currency0);
+            }
+
+            // If we are owed Token 1, we need to `take` it from the Pool Manager
+            if (delta.amount1() > 0) {
+                poolManager.take(
+                    key.currency1,
+                    address(this),
+                    uint128(delta.amount1())
+                );
+            }
+        }
+        // Else if this swap was a swap for Token 1 to Token 0
+        else {
+            // Same as above
+            // If we owe Uniswap Token 1, we need to send them the required amount
+            if (delta.amount1() < 0) {
+                IERC20(Currency.unwrap(key.currency1)).transfer(
+                    address(poolManager),
+                    uint128(-delta.amount1())
+                );
+                poolManager.settle(key.currency1);
+            }
+
+            // If we are owed Token 0, we take it from the Pool Manager
+            if (delta.amount0() > 0) {
+                poolManager.take(
+                    key.currency0,
+                    address(this),
+                    uint128(delta.amount0())
+                );
+            }
+        }
+
+        return delta;
+    }
+
+    function fillOrder(
+        PoolKey calldata key,
+        int24 tick,
+        bool zeroForOne,
+        int256 amountIn
+    ) internal {
+        // Setup the swapping parameters
+        IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
+            zeroForOne: zeroForOne,
+            amountSpecified: -amountIn,
+            // Set the price limit to be the least possible if swapping from Token 0 to Token 1
+            // or the maximum possible if swapping from Token 1 to Token 0
+            // i.e. infinite slippage allowed
+            sqrtPriceLimitX96: zeroForOne
+                ? TickMath.MIN_SQRT_RATIO + 1
+                : TickMath.MAX_SQRT_RATIO - 1
+        });
+
+        BalanceDelta delta = _handleSwap(key, swapParams);
+
+        // Update mapping to reflect that `amountIn` worth of tokens have been swapped from this order
+        takeProfitPositions[key.toId()][tick][zeroForOne] -= amountIn;
+
+        uint256 tokenId = getTokenId(key, tick, zeroForOne);
+
+        // Tokens we were owed by Uniswap are represented as a positive delta change
+        uint256 amountOfTokensReceivedFromSwap = zeroForOne
+            ? uint256(int256(delta.amount1()))
+            : uint256(int256(delta.amount0()));
+
+        // Update the amount of tokens claimable for this order
+        tokenIdClaimable[tokenId] += amountOfTokensReceivedFromSwap;
+    }
+
     // Hooks
     function afterInitialize(
         address,
@@ -163,7 +257,7 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         int24 tick,
         // Add bytes calldata after tick
         bytes calldata
-    ) external override returns (bytes4) {
+    ) external override poolManager returns (bytes4) {
         _setTickLowerLast(key.toId(), _getTickLower(tick, key.tickSpacing));
         return TakeProfitsHook.afterInitialize.selector;
     }
